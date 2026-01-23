@@ -20,18 +20,12 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-# System instruction to force reasoning-only mode
-REASONING_SYSTEM_PROMPT = """You are a reasoning-only assistant and second-thought partner.
+# System instruction for reasoning mode
+REASONING_SYSTEM_PROMPT = """You are a reasoning assistant providing a second opinion.
 
-CRITICAL CONSTRAINTS - YOU MUST OBEY THESE:
-- You must NOT use any tools to inspect repositories or access the filesystem
-- You must NOT propose code changes, diffs, or patches
-- You must NOT run commands or assume any code context
-- You must NOT reference the current working directory
-- ONLY reason from the text and file contents provided in this prompt
-- If file contents are attached below, analyze them as provided - do NOT try to access them yourself
+Analyze the input provided and give your perspective. If file contents are attached, analyze them as given.
 
-Your ONLY job is to reason deeply about the text and any attached file contents provided."""
+Be direct and helpful. Skip meta-commentary about what you can or can't do - just answer the question."""
 
 # Output format instructions based on mode
 OUTPUT_FORMATS = {
@@ -200,39 +194,33 @@ USER INPUT:
             }
 
         # Extract the model's response from Codex output
+        # Codex output format:
+        #   [metadata headers]
+        #   user
+        #   [user input]
+        #   codex (or thinking)
+        #   [model response]
+        #   tokens used
+        #   [token count]
         output = result.stdout
         lines = output.split('\n')
-        response_lines = []
-        skip_metadata = True
 
-        for line in lines:
-            # Skip Codex metadata header
-            if skip_metadata:
-                if line.startswith('OpenAI Codex') or line.startswith('--------') or \
-                   line.startswith('workdir:') or line.startswith('model:') or \
-                   line.startswith('provider:') or line.startswith('approval:') or \
-                   line.startswith('sandbox:') or line.startswith('reasoning effort:') or \
-                   line.startswith('reasoning summaries:') or line.startswith('session id:') or \
-                   line.startswith('mcp startup:') or line == 'user':
-                    continue
-                # Check for start of actual content
-                if line.startswith('thinking') or line.startswith('codex'):
-                    skip_metadata = False
-                    continue
-                if line.strip() and not line.startswith(' '):
-                    skip_metadata = False
+        # Find where model response starts (after 'codex' or 'thinking' line)
+        response_start = -1
+        response_end = len(lines)
 
-            # Skip token count at the end
-            if line.startswith('tokens used'):
-                continue
+        for i, line in enumerate(lines):
+            if line.strip() in ('codex', 'thinking'):
+                response_start = i + 1
+            elif line.startswith('tokens used') and response_start >= 0:
+                response_end = i
+                break
 
-            if not skip_metadata:
-                response_lines.append(line)
-
-        clean_output = '\n'.join(response_lines).strip()
-
-        # Fallback: if parsing failed, return raw output minus obvious metadata
-        if not clean_output:
+        if response_start >= 0:
+            response_lines = lines[response_start:response_end]
+            clean_output = '\n'.join(response_lines).strip()
+        else:
+            # Fallback: return everything after removing obvious metadata
             clean_output = output.strip()
 
         log(f"Codex returned {len(clean_output)} chars")
@@ -312,36 +300,23 @@ def call_codex_review(prompt: str, working_dir: str = None, timeout: int = 180) 
         # Extract the model's response from Codex output
         output = result.stdout
         lines = output.split('\n')
-        response_lines = []
-        skip_metadata = True
 
-        for line in lines:
-            # Skip Codex metadata header
-            if skip_metadata:
-                if line.startswith('OpenAI Codex') or line.startswith('--------') or \
-                   line.startswith('workdir:') or line.startswith('model:') or \
-                   line.startswith('provider:') or line.startswith('approval:') or \
-                   line.startswith('sandbox:') or line.startswith('reasoning effort:') or \
-                   line.startswith('reasoning summaries:') or line.startswith('session id:') or \
-                   line.startswith('mcp startup:') or line == 'user':
-                    continue
-                if line.startswith('thinking') or line.startswith('codex'):
-                    skip_metadata = False
-                    continue
-                if line.strip() and not line.startswith(' '):
-                    skip_metadata = False
+        # Find where model response starts (after 'codex' or 'thinking' line)
+        response_start = -1
+        response_end = len(lines)
 
-            # Skip token count at the end
-            if line.startswith('tokens used'):
-                continue
+        for i, line in enumerate(lines):
+            if line.strip() in ('codex', 'thinking'):
+                response_start = i + 1
+            elif line.startswith('tokens used') and response_start >= 0:
+                response_end = i
+                break
 
-            if not skip_metadata:
-                response_lines.append(line)
-
-        clean_output = '\n'.join(response_lines).strip()
-
-        # Fallback: if parsing failed, return raw output minus obvious metadata
-        if not clean_output:
+        if response_start >= 0:
+            response_lines = lines[response_start:response_end]
+            clean_output = '\n'.join(response_lines).strip()
+        else:
+            # Fallback: return everything after removing obvious metadata
             clean_output = output.strip()
 
         log(f"Codex review returned {len(clean_output)} chars")
@@ -471,6 +446,70 @@ USER INPUT:
         }
 
 
+def call_consensus(prompt: str, depth: str = "high", mode: str = "memo", files: list = None) -> dict:
+    """
+    Call both ChatGPT and Gemini and return combined results.
+
+    Args:
+        prompt: The user's reasoning request
+        depth: Reasoning effort (low, medium, high)
+        mode: Output format (memo, bullets, questions)
+        files: Optional list of file paths to include in analysis
+
+    Returns:
+        dict with 'success', 'output', and optionally 'error'
+    """
+    import concurrent.futures
+
+    log(f"Calling consensus: depth={depth}, mode={mode}")
+
+    results = {}
+    errors = []
+
+    # Run both models in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            executor.submit(call_codex, prompt, depth, mode, files): "chatgpt",
+            executor.submit(call_gemini, prompt, depth, mode, files): "gemini"
+        }
+
+        for future in concurrent.futures.as_completed(futures):
+            model = futures[future]
+            try:
+                result = future.result()
+                if result["success"]:
+                    results[model] = result["output"]
+                else:
+                    errors.append(f"{model}: {result['error']}")
+            except Exception as e:
+                errors.append(f"{model}: {str(e)}")
+
+    if not results:
+        return {
+            "success": False,
+            "output": None,
+            "error": "; ".join(errors)
+        }
+
+    # Format combined output
+    output_parts = []
+    for model in ["chatgpt", "gemini"]:
+        if model in results:
+            output_parts.append(f"## {model.upper()}\n\n{results[model]}")
+
+    if errors:
+        output_parts.append(f"\n---\n*Note: {'; '.join(errors)}*")
+
+    combined = "\n\n---\n\n".join(output_parts)
+    log(f"Consensus returned {len(combined)} chars from {len(results)} models")
+
+    return {
+        "success": True,
+        "output": combined,
+        "error": None
+    }
+
+
 def handle_initialize(request_id):
     """Handle MCP initialize request"""
     return {
@@ -574,6 +613,37 @@ def handle_tools_list(request_id):
                         },
                         "required": ["review_request"]
                     }
+                },
+                {
+                    "name": "consensus",
+                    "description": "Query BOTH ChatGPT and Gemini in parallel and return both responses for comparison. Use this when you want multiple perspectives on a reasoning task. Returns responses from both models side-by-side.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "reasoning_input": {
+                                "type": "string",
+                                "description": "The topic, question, or content you want both models to reason about."
+                            },
+                            "depth": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high"],
+                                "default": "high",
+                                "description": "Reasoning depth for both models."
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["memo", "bullets", "questions"],
+                                "default": "memo",
+                                "description": "Output format for both models."
+                            },
+                            "files": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional file paths to include in analysis for both models."
+                            }
+                        },
+                        "required": ["reasoning_input"]
+                    }
                 }
             ]
         }
@@ -584,7 +654,7 @@ def handle_tools_call(request_id, params):
     tool_name = params.get("name")
     arguments = params.get("arguments", {})
 
-    if tool_name not in ("chatgpt", "gemini", "codex_review"):
+    if tool_name not in ("chatgpt", "gemini", "codex_review", "consensus"):
         return {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -666,8 +736,10 @@ def handle_tools_call(request_id, params):
     # Call the appropriate backend
     if tool_name == "chatgpt":
         result = call_codex(reasoning_input, depth, mode, files)
-    else:  # gemini
+    elif tool_name == "gemini":
         result = call_gemini(reasoning_input, depth, mode, files)
+    else:  # consensus
+        result = call_consensus(reasoning_input, depth, mode, files)
 
     if result["success"]:
         return {

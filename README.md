@@ -8,6 +8,7 @@ A reasoning assistant that runs inside Claude Code. Provides access to multiple 
 |------|---------|---------|
 | `chatgpt` | Codex CLI (GPT-5) | Pure reasoning via ChatGPT subscription |
 | `gemini` | Gemini 2.5 Flash | Pure reasoning with 1M+ token context |
+| `consensus` | Both GPT + Gemini | Query both models in parallel, compare responses |
 | `codex_review` | Codex CLI | Git-aware code review |
 
 ## What It Does
@@ -98,6 +99,16 @@ Use gemini to analyze this architecture decision
 Ask gemini to critique this proposal with depth high
 ```
 
+### Consensus (Multi-Model)
+
+```
+Use consensus to get perspectives from both GPT and Gemini on this decision
+```
+
+```
+Ask consensus to analyze this architecture with depth high
+```
+
 ### Codex Review (Code Review)
 
 ```
@@ -110,7 +121,7 @@ Use codex_review to review the diff between main and this branch
 
 ### Tool Parameters
 
-#### chatgpt / gemini
+#### chatgpt / gemini / consensus
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -167,6 +178,7 @@ Multi-Reasoner (server.py)
     ↓
     ├── chatgpt → Codex CLI → GPT-5.2-Codex
     ├── gemini  → Google API → Gemini 2.5 Flash
+    ├── consensus → Both (parallel) → Combined response
     └── codex_review → Codex CLI review
     ↓
 Structured response
