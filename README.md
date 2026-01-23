@@ -67,7 +67,7 @@ pip install google-genai
 
 ```bash
 # Clone the repo
-git clone https://github.com/adampaulwalker/chatgpt-mcp.git ~/.claude/mcp/multi-reasoner
+git clone https://github.com/adampaulwalker/multi-reasoner.git ~/.claude/mcp/multi-reasoner
 
 # Register with Claude Code
 claude mcp add multi-reasoner -- python ~/.claude/mcp/multi-reasoner/server.py
