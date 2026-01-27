@@ -253,100 +253,42 @@ USER INPUT:
         }
 
 
-def call_codex_review(prompt: str, working_dir: str = None, timeout: int = 180) -> dict:
+def get_codex_review_hint() -> dict:
     """
-    Call Codex CLI review command for code review.
+    Return a hint recommending the /codex skill for code review.
 
-    Unlike the generic chatgpt tool, this runs `codex review` which is
-    git-aware and designed specifically for code review workflows.
-
-    Args:
-        prompt: The review request (e.g., "Review uncommitted changes")
-        working_dir: Directory to run review from (must be a git repo)
-        timeout: Max seconds to wait
-
-    Returns:
-        dict with 'success', 'output', and optionally 'error'
+    The MCP's subprocess approach has timeout limitations for large repos.
+    Running Codex via Bash (through the skill) allows background execution
+    and no timeout constraints.
     """
-    # Build codex review command
-    cmd = [
-        "codex", "review",
-        prompt
-    ]
+    hint_text = """## Use the /codex skill instead
 
-    # Use provided working dir or current directory
-    cwd = working_dir or os.getcwd()
+For code reviews, especially on large codebases, use the `/codex` skill which runs Codex via Bash.
 
-    log(f"Calling Codex review: prompt={prompt[:50]}..., cwd={cwd}")
+**Why?** This MCP tool has timeout limitations. The /codex skill:
+- Runs via Bash with no timeout constraints
+- Can run in background for large reviews
+- Supports all Codex review features
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=cwd
-        )
+**To use:** Just invoke `/codex` or run `codex review` directly via Bash.
 
-        if result.returncode != 0:
-            error_msg = result.stderr or f"Codex review exited with code {result.returncode}"
-            log(f"Codex review error: {error_msg}")
-            return {
-                "success": False,
-                "output": None,
-                "error": error_msg
-            }
+**Examples:**
+```bash
+# Review uncommitted changes
+codex review "Review my uncommitted changes"
 
-        # Extract the model's response from Codex output
-        output = result.stdout
-        lines = output.split('\n')
+# Review specific commits
+codex review "Review the last 3 commits"
 
-        # Find where model response starts (after 'codex' or 'thinking' line)
-        response_start = -1
-        response_end = len(lines)
+# Review branch diff
+codex review "Review changes between main and this branch"
+```"""
 
-        for i, line in enumerate(lines):
-            if line.strip() in ('codex', 'thinking'):
-                response_start = i + 1
-            elif line.startswith('tokens used') and response_start >= 0:
-                response_end = i
-                break
-
-        if response_start >= 0:
-            response_lines = lines[response_start:response_end]
-            clean_output = '\n'.join(response_lines).strip()
-        else:
-            # Fallback: return everything after removing obvious metadata
-            clean_output = output.strip()
-
-        log(f"Codex review returned {len(clean_output)} chars")
-        return {
-            "success": True,
-            "output": clean_output,
-            "error": None
-        }
-
-    except subprocess.TimeoutExpired:
-        log(f"Codex review timed out after {timeout}s")
-        return {
-            "success": False,
-            "output": None,
-            "error": f"Review timed out after {timeout} seconds."
-        }
-    except FileNotFoundError:
-        log("Codex CLI not found")
-        return {
-            "success": False,
-            "output": None,
-            "error": "Codex CLI not found. Install it with: brew install codex-cli"
-        }
-    except Exception as e:
-        log(f"Unexpected error: {e}")
-        return {
-            "success": False,
-            "output": None,
-            "error": str(e)
-        }
+    return {
+        "success": True,
+        "output": hint_text,
+        "error": None
+    }
 
 
 def call_gemini(prompt: str, depth: str = "high", mode: str = "memo", files: list = None, timeout: int = 180) -> dict:
@@ -598,20 +540,11 @@ def handle_tools_list(request_id):
                 },
                 {
                     "name": "codex_review",
-                    "description": "Use OpenAI Codex CLI to perform code review. Unlike chatgpt/gemini (pure reasoning), this tool is git-aware and designed for maker-checker workflows. It reviews uncommitted changes, specific commits, or diffs between branches. Requires being in a git repository.",
+                    "description": "DEPRECATED: Returns instructions to use the /codex skill instead. For code reviews, the /codex skill runs via Bash without timeout limitations. Call this to get usage instructions.",
                     "inputSchema": {
                         "type": "object",
-                        "properties": {
-                            "review_request": {
-                                "type": "string",
-                                "description": "What to review. Examples: 'Review uncommitted changes', 'Review the changes in commit abc123', 'Review the diff between main and this branch', 'Review the implementation in src/auth.ts'"
-                            },
-                            "working_dir": {
-                                "type": "string",
-                                "description": "Optional: Directory to run review from (must be a git repo). Defaults to current working directory."
-                            }
-                        },
-                        "required": ["review_request"]
+                        "properties": {},
+                        "required": []
                     }
                 },
                 {
@@ -664,50 +597,21 @@ def handle_tools_call(request_id, params):
             }
         }
 
-    # Handle codex_review separately (different parameters)
+    # Handle codex_review - now just returns hint to use /codex skill
     if tool_name == "codex_review":
-        review_request = arguments.get("review_request", "")
-        working_dir = arguments.get("working_dir")
-
-        if not review_request:
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {
-                    "code": -32602,
-                    "message": "review_request is required"
-                }
+        result = get_codex_review_hint()
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": result["output"]
+                    }
+                ]
             }
-
-        result = call_codex_review(review_request, working_dir)
-
-        if result["success"]:
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": result["output"]
-                        }
-                    ]
-                }
-            }
-        else:
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"Error: {result['error']}"
-                        }
-                    ],
-                    "isError": True
-                }
-            }
+        }
 
     # Handle chatgpt/gemini (reasoning tools)
     reasoning_input = arguments.get("reasoning_input", "")
