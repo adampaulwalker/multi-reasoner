@@ -14,6 +14,7 @@ Tools: chatgpt (GPT-5 via Codex), gemini (Gemini 2.5 Flash), consensus (both)
 import concurrent.futures
 import json
 import os
+import stat as stat_mod
 import subprocess
 import sys
 import threading
@@ -109,18 +110,79 @@ def log(msg: str):
     """Log to stderr (won't interfere with MCP protocol on stdout)"""
     print(f"[multi-reasoner] {msg}", file=sys.stderr, flush=True)
 
+# Sensitive path patterns that should never be read
+_BLOCKED_PATTERNS = (
+    '.ssh', '.gnupg', '.aws', '.env', '.netrc',
+    'credentials', 'secrets', '.git/config',
+    'id_rsa', 'id_ed25519', 'id_ecdsa',
+    '.claude/settings.json',
+)
+
+# Allowed file extensions for safety
+_ALLOWED_EXTENSIONS = (
+    '.md', '.txt', '.py', '.js', '.ts', '.jsx', '.tsx',
+    '.json', '.yaml', '.yml', '.toml', '.cfg', '.ini',
+    '.html', '.css', '.csv', '.xml', '.rst', '.org',
+    '.sh', '.bash', '.zsh', '.fish',
+    '.go', '.rs', '.rb', '.php', '.java', '.kt', '.swift',
+    '.c', '.h', '.cpp', '.hpp',
+    '.sql', '.graphql', '.proto',
+    '.tf', '.hcl',
+)
+
+# Known extensionless filenames that are safe to read
+_ALLOWED_BASENAMES = (
+    'README', 'LICENSE', 'LICENCE', 'Makefile', 'Dockerfile',
+    'Vagrantfile', 'Gemfile', 'Rakefile', 'Procfile',
+    'CHANGELOG', 'CONTRIBUTING', 'AUTHORS',
+)
+
+
+def _is_safe_path(path: str) -> tuple:
+    """Check if a file path is safe to read. Returns (safe: bool, reason: str, resolved_path: str)."""
+    resolved = os.path.realpath(os.path.expanduser(path))
+
+    # Block sensitive path patterns
+    lower_path = resolved.lower()
+    for pattern in _BLOCKED_PATTERNS:
+        if pattern in lower_path:
+            return False, f"Blocked: path matches sensitive pattern '{pattern}'", resolved
+
+    # Check extension or known basename
+    basename = os.path.basename(resolved)
+    _, ext = os.path.splitext(resolved)
+    if ext.lower() not in _ALLOWED_EXTENSIONS and basename not in _ALLOWED_BASENAMES:
+        return False, f"Blocked: '{basename}' not in allowed extensions or filenames", resolved
+
+    return True, "", resolved
+
+
 def read_files(file_paths: list) -> tuple:
-    """Read specified files and return their contents."""
+    """Read specified files and return their contents. Applies safety checks."""
     contents = []
     errors = []
 
     for path in file_paths:
+        safe, reason, resolved_path = _is_safe_path(path)
+        if not safe:
+            errors.append(f"{path}: {reason}")
+            log(f"Blocked file read: {path} - {reason}")
+            continue
         try:
-            expanded_path = os.path.expanduser(path)
-            with open(expanded_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                contents.append(f"=== FILE: {path} ===\n{content}\n=== END FILE ===")
-                log(f"Read file: {path} ({len(content)} chars)")
+            fd = os.open(resolved_path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                stat = os.fstat(fd)
+                if not stat_mod.S_ISREG(stat.st_mode):
+                    os.close(fd)
+                    errors.append(f"{path}: Not a regular file")
+                    continue
+                with os.fdopen(fd, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except Exception:
+                os.close(fd)
+                raise
+            contents.append(f"=== FILE: {path} ===\n{content}\n=== END FILE ===")
+            log(f"Read file: {path} ({len(content)} chars)")
         except FileNotFoundError:
             errors.append(f"File not found: {path}")
         except PermissionError:
@@ -227,9 +289,9 @@ def _call_gemini(prompt: str, depth: str = "high", mode: str = "memo", files: li
 
     log(f"Calling Gemini: depth={depth}, mode={mode}, thinking_budget={thinking_budget}")
 
-    try:
+    def _gemini_request():
         client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
+        return client.models.generate_content(
             model="gemini-2.5-flash",
             contents=full_prompt,
             config=types.GenerateContentConfig(
@@ -239,15 +301,27 @@ def _call_gemini(prompt: str, depth: str = "high", mode: str = "memo", files: li
             )
         )
 
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_gemini_request)
+        response = future.result(timeout=timeout)
+
         if response.text:
             log(f"Gemini returned {len(response.text)} chars")
             return {"success": True, "output": response.text, "error": None}
         else:
             return {"success": False, "output": None, "error": "Gemini returned empty response"}
 
+    except concurrent.futures.TimeoutError:
+        log(f"Gemini timed out after {timeout}s")
+        future.cancel()
+        executor.shutdown(wait=False)
+        return {"success": False, "output": None, "error": f"Timed out after {timeout}s"}
     except Exception as e:
         log(f"Gemini error: {e}")
         return {"success": False, "output": None, "error": str(e)}
+    finally:
+        executor.shutdown(wait=False)
 
 
 def _call_consensus(prompt: str, depth: str = "high", mode: str = "memo", files: list = None) -> dict:
@@ -303,7 +377,7 @@ def chatgpt(
     mode: str = "memo",
     files: Optional[list] = None
 ) -> str:
-    """Consult ChatGPT (GPT-5 via Codex) for qualitative reasoning. Pure reasoning tool - will NOT read files, inspect code, or run commands. Use for brainstorming, analysis, critique, strategic thinking, decision-making, or any non-code reasoning task."""
+    """Consult ChatGPT (GPT-5 via Codex) for qualitative reasoning. Optionally pass file paths to include their contents (restricted to safe text-based extensions). Use for brainstorming, analysis, critique, strategic thinking, decision-making, or any non-code reasoning task."""
     result = _call_codex(reasoning_input, depth, mode, files or [])
     if result["success"]:
         return result["output"]
@@ -318,7 +392,7 @@ def gemini(
     mode: str = "memo",
     files: Optional[list] = None
 ) -> str:
-    """Consult Google Gemini 2.5 Flash for qualitative reasoning. Pure reasoning tool - will NOT read files, inspect code, or run commands. Use for brainstorming, analysis, critique, strategic thinking, decision-making. Has 1M+ token context window."""
+    """Consult Google Gemini 2.5 Flash for qualitative reasoning. Optionally pass file paths to include their contents (restricted to safe text-based extensions). Use for brainstorming, analysis, critique, strategic thinking, decision-making. Has 1M+ token context window."""
     result = _call_gemini(reasoning_input, depth, mode, files or [])
     if result["success"]:
         return result["output"]
