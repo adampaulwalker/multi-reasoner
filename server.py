@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -24,14 +25,19 @@ from mcp.server.fastmcp import FastMCP
 # can start even if the package or API key isn't available
 genai = None
 types = None
+_genai_lock = threading.Lock()
 
 def _ensure_genai():
     global genai, types
-    if genai is None:
+    if genai is not None and types is not None:
+        return
+    with _genai_lock:
+        if genai is not None and types is not None:
+            return
         from google import genai as _genai
         from google.genai import types as _types
-        genai = _genai
         types = _types
+        genai = _genai
 
 # System instruction for reasoning mode
 REASONING_SYSTEM_PROMPT = """You are a reasoning assistant providing a second opinion.
