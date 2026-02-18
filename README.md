@@ -1,6 +1,6 @@
 # Multi-Reasoner MCP Server
 
-A reasoning assistant that runs inside Claude Code. Provides access to multiple AI backends for qualitative reasoning and code review.
+A reasoning assistant that runs inside Claude Code. Provides access to multiple AI backends for qualitative reasoning.
 
 ## Tools
 
@@ -9,7 +9,7 @@ A reasoning assistant that runs inside Claude Code. Provides access to multiple 
 | `chatgpt` | Codex CLI (GPT-5) | Pure reasoning via ChatGPT subscription |
 | `gemini` | Gemini 2.5 Flash | Pure reasoning with 1M+ token context |
 | `consensus` | Both GPT + Gemini | Query both models in parallel, compare responses |
-| `codex_review` | Codex CLI | Git-aware code review |
+| `codex_review` | *(deprecated)* | Returns instructions to use the `/codex` skill instead |
 
 ## What It Does
 
@@ -20,21 +20,16 @@ A reasoning assistant that runs inside Claude Code. Provides access to multiple 
 - Critique and devil's advocate
 - Synthesis and summarization
 
-**codex_review** - Git-aware code review:
-- Review uncommitted changes
-- Review specific commits
-- Compare branches
-- Maker-checker workflow support
-
 **What chatgpt/gemini do NOT do:**
-- Read files automatically (but you can pass files explicitly)
 - Inspect repositories
 - Run commands
 - Propose code changes
 
+You can optionally pass file paths via the `files` parameter to include their contents in the analysis. File reads are restricted to safe text-based extensions (`.md`, `.py`, `.js`, `.json`, etc.) and known filenames (`README`, `Makefile`, `Dockerfile`, etc.). Sensitive paths (`.ssh`, `.env`, credentials, etc.) are blocked.
+
 ## Prerequisites
 
-### For ChatGPT / Codex Review
+### For ChatGPT
 
 ```bash
 brew install codex-cli
@@ -61,7 +56,7 @@ Add to your shell profile for persistence.
 ### Python Dependencies
 
 ```bash
-pip install google-genai
+pip install mcp google-genai
 ```
 
 ## Installation
@@ -109,16 +104,6 @@ Use consensus to get perspectives from both GPT and Gemini on this decision
 Ask consensus to analyze this architecture with depth high
 ```
 
-### Codex Review (Code Review)
-
-```
-Use codex_review to review uncommitted changes
-```
-
-```
-Use codex_review to review the diff between main and this branch
-```
-
 ### Tool Parameters
 
 #### chatgpt / gemini / consensus
@@ -127,15 +112,8 @@ Use codex_review to review the diff between main and this branch
 |-----------|------|---------|-------------|
 | `reasoning_input` | string | (required) | Topic or content to reason about |
 | `depth` | `low` \| `medium` \| `high` | `high` | Reasoning effort level |
-| `mode` | `memo` \| `bullets` \| `questions` | `memo` | Output format |
-| `files` | array of strings | `[]` | File paths to include in analysis |
-
-#### codex_review
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `review_request` | string | (required) | What to review |
-| `working_dir` | string | cwd | Git repo directory |
+| `mode` | `memo` \| `bullets` \| `questions` \| `quick` | `memo` | Output format |
+| `files` | array of strings | `[]` | File paths to include in analysis (safe extensions only) |
 
 ### Analyzing Files
 
@@ -155,18 +133,14 @@ Use chatgpt with files ["/path/to/doc1.md", "/path/to/doc2.txt"] to compare appr
 
 **bullets**: Concise bullet-point analysis.
 
-**questions**: Probing questions only—useful for exploring a topic.
+**questions**: Probing questions only - useful for exploring a topic.
+
+**quick**: Direct 2-5 sentence answer with no formatting.
 
 ## Testing
 
 ```bash
 ~/.claude/mcp/multi-reasoner/test.sh
-```
-
-Or test manually:
-
-```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | python ~/.claude/mcp/multi-reasoner/server.py
 ```
 
 ## How It Works
@@ -176,10 +150,9 @@ Claude Code
     ↓ MCP tool call
 Multi-Reasoner (server.py)
     ↓
-    ├── chatgpt → Codex CLI → GPT-5.2-Codex
-    ├── gemini  → Google API → Gemini 2.5 Flash
-    ├── consensus → Both (parallel) → Combined response
-    └── codex_review → Codex CLI review
+    ├── chatgpt   → Codex CLI → GPT-5.2-Codex
+    ├── gemini    → Google API → Gemini 2.5 Flash
+    └── consensus → Both (parallel) → Combined response
     ↓
 Structured response
 ```
@@ -193,6 +166,10 @@ Install: `brew install codex-cli`
 ### "GEMINI_API_KEY not set"
 
 Export your API key: `export GEMINI_API_KEY="..."`
+
+### "google-genai not available"
+
+Install: `pip install google-genai`
 
 ### Timeout errors
 
