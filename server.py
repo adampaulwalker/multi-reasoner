@@ -116,7 +116,13 @@ _BLOCKED_PATTERNS = (
     'credentials', 'secrets', '.git/config',
     'id_rsa', 'id_ed25519', 'id_ecdsa',
     '.claude/settings.json',
+    '.codex', '.config',
+    '.kube', '.docker/config',
 )
+
+# Safety limits
+_MAX_FILE_COUNT = 10
+_MAX_FILE_SIZE = 512 * 1024  # 512KB per file
 
 # Allowed file extensions for safety
 _ALLOWED_EXTENSIONS = (
@@ -151,7 +157,7 @@ def _is_safe_path(path: str) -> tuple:
     # Check extension or known basename
     basename = os.path.basename(resolved)
     _, ext = os.path.splitext(resolved)
-    if ext.lower() not in _ALLOWED_EXTENSIONS and basename not in _ALLOWED_BASENAMES:
+    if ext.lower() not in _ALLOWED_EXTENSIONS and basename.lower() not in {b.lower() for b in _ALLOWED_BASENAMES}:
         return False, f"Blocked: '{basename}' not in allowed extensions or filenames", resolved
 
     return True, "", resolved
@@ -161,6 +167,10 @@ def read_files(file_paths: list) -> tuple:
     """Read specified files and return their contents. Applies safety checks."""
     contents = []
     errors = []
+
+    if len(file_paths) > _MAX_FILE_COUNT:
+        errors.append(f"Too many files ({len(file_paths)}), limit is {_MAX_FILE_COUNT}")
+        file_paths = file_paths[:_MAX_FILE_COUNT]
 
     for path in file_paths:
         safe, reason, resolved_path = _is_safe_path(path)
@@ -175,6 +185,10 @@ def read_files(file_paths: list) -> tuple:
                 if not stat_mod.S_ISREG(stat.st_mode):
                     os.close(fd)
                     errors.append(f"{path}: Not a regular file")
+                    continue
+                if stat.st_size > _MAX_FILE_SIZE:
+                    os.close(fd)
+                    errors.append(f"{path}: File too large ({stat.st_size} bytes, limit {_MAX_FILE_SIZE})")
                     continue
                 with os.fdopen(fd, 'r', encoding='utf-8') as f:
                     content = f.read()

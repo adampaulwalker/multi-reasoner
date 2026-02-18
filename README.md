@@ -21,11 +21,14 @@ A reasoning assistant that runs inside Claude Code. Provides access to multiple 
 - Synthesis and summarization
 
 **What chatgpt/gemini do NOT do:**
-- Inspect repositories
-- Run commands
-- Propose code changes
+- Run commands or modify files
+- Automatically read your codebase (you must explicitly pass file paths)
 
-You can optionally pass file paths via the `files` parameter to include their contents in the analysis. File reads are restricted to safe text-based extensions (`.md`, `.py`, `.js`, `.json`, etc.) and known filenames (`README`, `Makefile`, `Dockerfile`, etc.). Sensitive paths (`.ssh`, `.env`, credentials, etc.) are blocked.
+You can optionally pass file paths via the `files` parameter to include their contents in the analysis. Safety restrictions apply:
+- Only text-based extensions allowed (`.md`, `.py`, `.js`, `.json`, `.toml`, etc.)
+- Known extensionless filenames allowed (`README`, `Makefile`, `Dockerfile`, etc.)
+- Sensitive paths blocked (`.ssh`, `.env`, `.codex`, `.config`, credentials, etc.)
+- Max 10 files per request, 512KB per file
 
 ## Prerequisites
 
@@ -66,7 +69,7 @@ pip install mcp google-genai
 git clone https://github.com/adampaulwalker/multi-reasoner.git ~/.claude/mcp/multi-reasoner
 
 # Register with Claude Code
-claude mcp add multi-reasoner -- python ~/.claude/mcp/multi-reasoner/server.py
+claude mcp add multi-reasoner -- python3 ~/.claude/mcp/multi-reasoner/server.py
 
 # Verify
 claude mcp list
