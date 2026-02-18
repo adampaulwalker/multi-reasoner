@@ -115,7 +115,7 @@ _BLOCKED_PATTERNS = (
     '.ssh', '.gnupg', '.aws', '.env', '.netrc',
     'credentials', 'secrets', '.git/config',
     'id_rsa', 'id_ed25519', 'id_ecdsa',
-    '.claude/settings.json',
+    '.claude/',
     '.codex', '.config',
     '.kube', '.docker/config',
 )
