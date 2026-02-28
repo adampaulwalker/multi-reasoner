@@ -8,19 +8,21 @@ A reasoning assistant that runs inside Claude Code. Provides access to multiple 
 |------|---------|---------|
 | `chatgpt` | Codex CLI (GPT-5) | Pure reasoning via ChatGPT subscription |
 | `gemini` | Gemini 2.5 Flash | Pure reasoning with 1M+ token context |
-| `consensus` | Both GPT + Gemini | Query both models in parallel, compare responses |
+| `grok` | xAI (Grok 3) | Direct, sometimes contrarian reasoning |
+| `mistral` | Mistral Large | EU-based, GDPR-compliant reasoning |
+| `consensus` | All four in parallel | Query all models and compare responses |
 | `codex_review` | *(deprecated)* | Returns instructions to use the `/codex` skill instead |
 
 ## What It Does
 
-**chatgpt / gemini** - Pure reasoning tools for:
+**chatgpt / gemini / grok / mistral** - Pure reasoning tools for:
 - Brainstorming and ideation
 - Strategic analysis
 - Decision-making support
 - Critique and devil's advocate
 - Synthesis and summarization
 
-**What chatgpt/gemini do NOT do:**
+**What these tools do NOT do:**
 - Run commands or modify files
 - Automatically read your codebase (you must explicitly pass file paths)
 
@@ -54,12 +56,28 @@ Set your API key:
 export GEMINI_API_KEY="your-api-key"
 ```
 
-Add to your shell profile for persistence.
+### For Grok (xAI)
+
+Set your API key:
+
+```bash
+export XAI_API_KEY="your-api-key"
+```
+
+### For Mistral
+
+Set your API key:
+
+```bash
+export MISTRAL_API_KEY="your-api-key"
+```
+
+Add API keys to your shell profile for persistence.
 
 ### Python Dependencies
 
 ```bash
-pip install mcp google-genai
+pip install mcp google-genai openai mistralai
 ```
 
 ## Installation
@@ -97,19 +115,27 @@ Use gemini to analyze this architecture decision
 Ask gemini to critique this proposal with depth high
 ```
 
+### Grok (xAI)
+
+```
+Use grok to give a contrarian take on this business model
+```
+
+### Mistral
+
+```
+Use mistral to analyze this GDPR compliance question
+```
+
 ### Consensus (Multi-Model)
 
 ```
-Use consensus to get perspectives from both GPT and Gemini on this decision
-```
-
-```
-Ask consensus to analyze this architecture with depth high
+Use consensus to get perspectives from all four models on this decision
 ```
 
 ### Tool Parameters
 
-#### chatgpt / gemini / consensus
+#### chatgpt / gemini / grok / mistral / consensus
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -155,7 +181,9 @@ Multi-Reasoner (server.py)
     ↓
     ├── chatgpt   → Codex CLI → GPT-5.2-Codex
     ├── gemini    → Google API → Gemini 2.5 Flash
-    └── consensus → Both (parallel) → Combined response
+    ├── grok      → xAI API → Grok 3
+    ├── mistral   → Mistral API → Mistral Large
+    └── consensus → All four (parallel) → Combined response
     ↓
 Structured response
 ```
@@ -173,6 +201,22 @@ Export your API key: `export GEMINI_API_KEY="..."`
 ### "google-genai not available"
 
 Install: `pip install google-genai`
+
+### "XAI_API_KEY not set"
+
+Export your API key: `export XAI_API_KEY="..."`
+
+### "openai package not available"
+
+Install: `pip install openai`
+
+### "MISTRAL_API_KEY not set"
+
+Export your API key: `export MISTRAL_API_KEY="..."`
+
+### "mistralai package not available"
+
+Install: `pip install mistralai`
 
 ### Timeout errors
 

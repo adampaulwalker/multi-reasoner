@@ -2,13 +2,14 @@
 """
 Multi-Reasoner MCP Server
 
-A pure reasoning assistant that uses multiple AI backends (GPT-5, Gemini).
+A pure reasoning assistant that uses multiple AI backends
+(GPT-5, Gemini, Grok, Mistral).
 This is NOT a coding agent - it provides qualitative reasoning only.
 
 Usage:
     python server.py
 
-Tools: chatgpt (GPT-5 via Codex), gemini (Gemini 2.5 Flash), consensus (both)
+Tools: chatgpt, gemini, grok, mistral, consensus (all four in parallel)
 """
 
 import concurrent.futures
@@ -39,6 +40,34 @@ def _ensure_genai():
         from google.genai import types as _types
         types = _types
         genai = _genai
+
+# Lazy import OpenAI SDK - used for Grok (xAI) via OpenAI-compatible API
+_openai_mod = None
+_openai_lock = threading.Lock()
+
+def _ensure_openai():
+    global _openai_mod
+    if _openai_mod is not None:
+        return
+    with _openai_lock:
+        if _openai_mod is not None:
+            return
+        import openai as _openai
+        _openai_mod = _openai
+
+# Lazy import Mistral SDK
+_mistral_mod = None
+_mistral_lock = threading.Lock()
+
+def _ensure_mistral():
+    global _mistral_mod
+    if _mistral_mod is not None:
+        return
+    with _mistral_lock:
+        if _mistral_mod is not None:
+            return
+        from mistralai import Mistral as _Mistral
+        _mistral_mod = _Mistral
 
 # System instruction for reasoning mode
 REASONING_SYSTEM_PROMPT = """You are a reasoning assistant providing a second opinion.
@@ -338,17 +367,128 @@ def _call_gemini(prompt: str, depth: str = "high", mode: str = "memo", files: li
         executor.shutdown(wait=False)
 
 
+def _call_openai_compatible(prompt: str, depth: str = "high", mode: str = "memo", files: list = None,
+                            *, base_url: str, api_key_env: str, model: str,
+                            label: str, timeout: int = 180) -> dict:
+    """Call any OpenAI-compatible API (used for Grok/xAI)."""
+    try:
+        _ensure_openai()
+    except ImportError as e:
+        return {"success": False, "output": None, "error": f"openai package not available: {e}"}
+
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        return {"success": False, "output": None, "error": f"{api_key_env} not set"}
+
+    full_prompt = _build_prompt(prompt, mode, files)
+
+    max_tokens_map = {"low": 4096, "medium": 8192, "high": 16384}
+    max_tokens = max_tokens_map.get(depth, 16384)
+
+    log(f"Calling {label}: depth={depth}, mode={mode}, model={model}")
+
+    try:
+        client = _openai_mod.OpenAI(base_url=base_url, api_key=api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": full_prompt}],
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
+        text = response.choices[0].message.content
+        if text:
+            log(f"{label} returned {len(text)} chars")
+            return {"success": True, "output": text, "error": None}
+        else:
+            return {"success": False, "output": None, "error": f"{label} returned empty response"}
+
+    except Exception as e:
+        log(f"{label} error: {e}")
+        return {"success": False, "output": None, "error": str(e)}
+
+
+def _call_grok(prompt: str, depth: str = "high", mode: str = "memo", files: list = None, timeout: int = 180) -> dict:
+    """Call Grok (xAI) via OpenAI-compatible API."""
+    return _call_openai_compatible(
+        prompt, depth, mode, files,
+        base_url="https://api.x.ai/v1",
+        api_key_env="XAI_API_KEY",
+        model="grok-3-latest",
+        label="Grok",
+        timeout=timeout,
+    )
+
+
+def _call_mistral(prompt: str, depth: str = "high", mode: str = "memo", files: list = None, timeout: int = 180) -> dict:
+    """Call Mistral Large via official SDK."""
+    try:
+        _ensure_mistral()
+    except ImportError as e:
+        return {"success": False, "output": None, "error": f"mistralai package not available: {e}"}
+
+    api_key = os.environ.get("MISTRAL_API_KEY")
+    if not api_key:
+        return {"success": False, "output": None, "error": "MISTRAL_API_KEY not set"}
+
+    full_prompt = _build_prompt(prompt, mode, files)
+
+    max_tokens_map = {"low": 4096, "medium": 8192, "high": 16384}
+    max_tokens = max_tokens_map.get(depth, 16384)
+
+    log(f"Calling Mistral: depth={depth}, mode={mode}, max_tokens={max_tokens}")
+
+    def _mistral_request():
+        client = _mistral_mod(api_key=api_key)
+        return client.chat.complete(
+            model="mistral-large-latest",
+            messages=[{"role": "user", "content": full_prompt}],
+            max_tokens=max_tokens,
+        )
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_mistral_request)
+        response = future.result(timeout=timeout)
+
+        content = response.choices[0].message.content
+        # Handle content being a string or list of content blocks
+        if isinstance(content, list):
+            text = "\n".join(str(block) for block in content)
+        else:
+            text = content
+
+        if text:
+            log(f"Mistral returned {len(text)} chars")
+            return {"success": True, "output": text, "error": None}
+        else:
+            return {"success": False, "output": None, "error": "Mistral returned empty response"}
+
+    except concurrent.futures.TimeoutError:
+        log(f"Mistral timed out after {timeout}s")
+        future.cancel()
+        executor.shutdown(wait=False)
+        return {"success": False, "output": None, "error": f"Timed out after {timeout}s"}
+    except Exception as e:
+        log(f"Mistral error: {e}")
+        return {"success": False, "output": None, "error": str(e)}
+    finally:
+        executor.shutdown(wait=False)
+
+
 def _call_consensus(prompt: str, depth: str = "high", mode: str = "memo", files: list = None) -> dict:
-    """Call both ChatGPT and Gemini in parallel and return combined results."""
+    """Call all four models in parallel and return combined results."""
     log(f"Calling consensus: depth={depth}, mode={mode}")
 
     results = {}
     errors = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(_call_codex, prompt, depth, mode, files): "chatgpt",
-            executor.submit(_call_gemini, prompt, depth, mode, files): "gemini"
+            executor.submit(_call_gemini, prompt, depth, mode, files): "gemini",
+            executor.submit(_call_grok, prompt, depth, mode, files): "grok",
+            executor.submit(_call_mistral, prompt, depth, mode, files): "mistral",
         }
 
         for future in concurrent.futures.as_completed(futures):
@@ -366,7 +506,7 @@ def _call_consensus(prompt: str, depth: str = "high", mode: str = "memo", files:
         return {"success": False, "output": None, "error": "; ".join(errors)}
 
     output_parts = []
-    for model in ["chatgpt", "gemini"]:
+    for model in ["chatgpt", "gemini", "grok", "mistral"]:
         if model in results:
             output_parts.append(f"## {model.upper()}\n\n{results[model]}")
 
@@ -415,13 +555,43 @@ def gemini(
 
 
 @mcp.tool(structured_output=False)
+def grok(
+    reasoning_input: str,
+    depth: str = "high",
+    mode: str = "memo",
+    files: Optional[list] = None
+) -> str:
+    """Consult Grok (xAI) for qualitative reasoning. Known for direct, sometimes contrarian perspectives. Optionally pass file paths to include their contents (restricted to safe text-based extensions). Use for brainstorming, analysis, critique, strategic thinking, decision-making."""
+    result = _call_grok(reasoning_input, depth, mode, files or [])
+    if result["success"]:
+        return result["output"]
+    else:
+        return f"Error: {result['error']}"
+
+
+@mcp.tool(structured_output=False)
+def mistral(
+    reasoning_input: str,
+    depth: str = "high",
+    mode: str = "memo",
+    files: Optional[list] = None
+) -> str:
+    """Consult Mistral Large (EU-based, GDPR-compliant) for qualitative reasoning. MoE architecture offers concise, pragmatic analysis. Optionally pass file paths to include their contents (restricted to safe text-based extensions). Use for brainstorming, analysis, critique, strategic thinking, decision-making."""
+    result = _call_mistral(reasoning_input, depth, mode, files or [])
+    if result["success"]:
+        return result["output"]
+    else:
+        return f"Error: {result['error']}"
+
+
+@mcp.tool(structured_output=False)
 def consensus(
     reasoning_input: str,
     depth: str = "high",
     mode: str = "memo",
     files: Optional[list] = None
 ) -> str:
-    """Query BOTH ChatGPT and Gemini in parallel and return both responses for comparison. Use when you want multiple perspectives on a reasoning task. Returns responses from both models side-by-side."""
+    """Query ALL four models (ChatGPT, Gemini, Grok, Mistral) in parallel and return all responses for comparison. Use when you want multiple perspectives on a reasoning task. Returns responses from all models side-by-side."""
     result = _call_consensus(reasoning_input, depth, mode, files or [])
     if result["success"]:
         return result["output"]
